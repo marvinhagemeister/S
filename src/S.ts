@@ -64,7 +64,7 @@ S.root = function root<T>(fn : (dispose : () => void) => T) : T {
             if (root === null) {
                 // nothing to dispose
             } else if (RunningClock !== null) {
-                RootClock.disposes.add(root);
+                RootClock.disposes.push(root);
             } else {
                 dispose(root);
             }
@@ -156,7 +156,7 @@ S.freeze = function freeze<T>(fn : () => T) : T {
         result = fn();
     } else {
         RunningClock = RootClock;
-        RunningClock.changes.reset();
+        RunningClock.changes.length = 0;
 
         try {
             result = fn();
@@ -209,7 +209,7 @@ export { INode as Node, IDataNode as DataNode, IClock as Clock };
 S.makeComputationNode = makeComputationNode;
 S.disposeNode = function disposeNode(node : ComputationNode) {
     if (RunningClock !== null) {
-        RootClock.disposes.add(node);
+        RootClock.disposes.push(node);
     } else {
         dispose(node);
     }
@@ -229,9 +229,9 @@ S.isListening = function isListening() {
 class Clock {
     time      = 0;
 
-    changes   = new Queue<DataNode>(); // batched changes to data nodes
-    updates   = new Queue<ComputationNode>(); // computations to update
-    disposes  = new Queue<ComputationNode>(); // disposals to run after current batch of updates finishes
+    changes   = [] as DataNode[]; // batched changes to data nodes
+    updates   = [] as ComputationNode[]; // computations to update
+    disposes  = [] as ComputationNode[]; // disposals to run after current batch of updates finishes
 }
 
 var RootClockProxy = {
@@ -261,12 +261,12 @@ class DataNode {
                 }
             } else { // add to list of changes
                 this.pending = value;
-                RootClock.changes.add(this);
+                RootClock.changes.push(this);
             }
         } else { // not batching, respond to change now
             if (this.log !== null) {
                 this.pending = value;
-                RootClock.changes.add(this);
+                RootClock.changes.push(this);
                 event();
             } else {
                 this.value = value;
@@ -318,28 +318,6 @@ class Log {
     nodes = null as null | ComputationNode[];
     nodeslots = null as null | number[];
 }
-    
-class Queue<T> {
-    items = [] as T[];
-    count = 0;
-    
-    reset() {
-        this.count = 0;
-    }
-    
-    add(item : T) {
-        this.items[this.count++] = item;
-    }
-    
-    run(fn : (item : T) => void) {
-        var items = this.items;
-        for (var i = 0; i < this.count; i++) {
-            fn(items[i]!);
-            items[i] = null!;
-        }
-        this.count = 0;
-    }
-}
 
 // Constants
 var NOTPENDING = {},
@@ -387,8 +365,8 @@ function makeComputationNode<T>(fn : (v : T | undefined) => T, value : T | undef
 
 function execToplevelComputation<T>(fn : (v : T | undefined) => T, value : T | undefined) {
     RunningClock = RootClock;
-    RootClock.changes.reset();
-    RootClock.updates.reset();
+    RootClock.changes.length = 0;
+    RootClock.updates.length = 0;
 
     try {
         return fn(value);
@@ -398,7 +376,7 @@ function execToplevelComputation<T>(fn : (v : T | undefined) => T, value : T | u
 }
 
 function finishToplevelComputation(owner : ComputationNode | null, listener : ComputationNode | null) {
-    if (RootClock.changes.count > 0 || RootClock.updates.count > 0) {
+    if (RootClock.changes.length > 0 || RootClock.updates.length > 0) {
         RootClock.time++;
         try {
             run(RootClock);
@@ -500,7 +478,7 @@ function logComputationRead(node : ComputationNode) {
 function event() {
     // b/c we might be under a top level S.root(), have to preserve current root
     var owner = Owner;
-    RootClock.updates.reset();
+    RootClock.updates.length = 0;
     RootClock.time++;
     try {
         run(RootClock);
@@ -516,16 +494,16 @@ function run(clock : Clock) {
         
     RunningClock = clock;
 
-    clock.disposes.reset();
+    clock.disposes.length = 0;
     
     // for each batch ...
-    while (clock.changes.count !== 0 || clock.updates.count !== 0 || clock.disposes.count !== 0) {
+    while (clock.changes.length !== 0 || clock.updates.length !== 0 || clock.disposes.length !== 0) {
         if (count > 0) // don't tick on first run, or else we expire already scheduled updates
             clock.time++;
 
-        clock.changes.run(applyDataChange);
-        clock.updates.run(updateNode);
-        clock.disposes.run(dispose);
+        clock.changes.forEach(applyDataChange);
+        clock.updates.forEach(updateNode);
+        clock.disposes.forEach(dispose);
 
         // if there are still changes after excessive batches, assume runaway            
         if (count++ > 1e5) {
@@ -560,7 +538,7 @@ function markNodeStale(node : ComputationNode) {
     if (node.age < time) {
         node.age = time;
         node.state = STALE;
-        RootClock.updates.add(node);
+        RootClock.updates.push(node);
         if (node.owned !== null) markOwnedNodesForDisposal(node.owned);
         if (node.log !== null) markComputationsStale(node.log);
     }
